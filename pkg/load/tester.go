@@ -32,6 +32,7 @@ func NewTester(url string, requests int, concurrency int) *Tester {
 
 func (t *Tester) Run() *Report {
 	start := time.Now()
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	report := &Report{
 		ErrorStatusDistribution: make(map[int]int),
@@ -45,16 +46,24 @@ func (t *Tester) Run() *Report {
 
 	for i := 0; i < t.Concurrency; i++ {
 		wg.Add(1)
-		go t.threadWorker(client, requestsChannel, resultsChannel, &wg)
+		go func() {
+			defer wg.Done()
+			for range requestsChannel {
+				status := makeRequest(client, t.URL)
+				resultsChannel <- status
+			}
+		}()
 	}
 
 	for i := 0; i < t.Requests; i++ {
 		requestsChannel <- struct{}{}
 	}
-
 	close(requestsChannel)
-	wg.Wait()
-	close(resultsChannel)
+
+	go func() {
+		wg.Wait()
+		close(resultsChannel)
+	}()
 
 	for status := range resultsChannel {
 		report.processResult(status)
@@ -64,14 +73,13 @@ func (t *Tester) Run() *Report {
 	return report
 }
 
-func (t *Tester) threadWorker(client *http.Client, requestsChannel chan struct{}, resultsChannel chan int, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	for range requestsChannel {
-		res, _ := client.Get(t.URL)
-		resultsChannel <- res.StatusCode
-		res.Body.Close()
+func makeRequest(client *http.Client, url string) int {
+	resp, err := client.Get(url)
+	if err != nil {
+		return 0
 	}
+	defer resp.Body.Close()
+	return resp.StatusCode
 }
 
 func (r *Report) processResult(status int) {
@@ -82,6 +90,8 @@ func (r *Report) processResult(status int) {
 		r.SuccessfulRequests++
 	} else {
 		r.FailedRequests++
-		r.ErrorStatusDistribution[status]++
+		if status != 0 {
+			r.ErrorStatusDistribution[status]++
+		}
 	}
 }
